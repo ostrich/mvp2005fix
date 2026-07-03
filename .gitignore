@@ -1,0 +1,14 @@
+# Local runtime/config artifacts
+mvp2005fix.ini
+mvp2005fix.log
+release/
+
+# Compiler/intermediate output
+*.o
+*.obj
+*.pdb
+*.ilk
+
+# Editor/OS noise
+*~
+.DS_Store
