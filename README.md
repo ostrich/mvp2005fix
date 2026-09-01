@@ -8,9 +8,9 @@ It also includes an optional save-game fix for systems where MVP Baseball 2005 h
 
 ## Quick Start
 
-[Download the latest release](https://github.com/ostrich/mvp2005fix/releases/latest), or build these two files:
+[Download the latest stable release](https://github.com/ostrich/mvp2005fix/releases/latest). To try changes that have not reached a versioned release yet, download the [latest automated master build](https://github.com/ostrich/mvp2005fix/releases/tag/master-build) instead.
 
-For changes that have not reached a versioned release yet, download the [latest automated master build](https://github.com/ostrich/mvp2005fix/releases/tag/master-build).
+Extract the ZIP. It contains these two files:
 
 ```text
 mvp2005fix.exe
