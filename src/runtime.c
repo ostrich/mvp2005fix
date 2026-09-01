@@ -23,7 +23,6 @@ static CreateDeviceFn real_CreateDevice;
 static SetVertexShaderConstantFn real_SetVertexShaderConstant;
 static SetVertexShaderFn real_SetVertexShader;
 static SetStreamSourceFn real_SetStreamSource;
-static void *d3d8_vtbl_copy[32];
 static DWORD current_vertex_shader;
 static DWORD current_stream_stride;
 static float aspect_scale = 0.75f;
@@ -314,16 +313,19 @@ static HRESULT WINAPI fake_SetStreamSource(void *self, UINT stream_number, void 
     return real_SetStreamSource ? real_SetStreamSource(self, stream_number, stream_data, stride) : E_FAIL;
 }
 
-static void patch_vtable_slot(void **vtbl, int slot, void *replacement, void **original)
+static int patch_vtable_slot(void **vtbl, int slot, void *replacement, void **original)
 {
     DWORD old_protect;
 
-    if (!vtbl || !replacement) return;
+    if (!vtbl || !replacement) return 0;
+    if (vtbl[slot] == replacement) return 1;
     if (original && !*original) *original = vtbl[slot];
     if (VirtualProtect(&vtbl[slot], sizeof(void *), PAGE_EXECUTE_READWRITE, &old_protect)) {
         vtbl[slot] = replacement;
         VirtualProtect(&vtbl[slot], sizeof(void *), old_protect, &old_protect);
+        return vtbl[slot] == replacement;
     }
+    return 0;
 }
 
 static HRESULT WINAPI fake_CreateDevice(void *self, UINT adapter, DWORD device_type, HWND focus_window,
@@ -366,12 +368,16 @@ static void *WINAPI fake_Direct3DCreate8(UINT sdk_version)
         hook_function(target_d3d_create8, fake_Direct3DCreate8, saved_d3d_create8);
     }
     if (d3d && !real_d3d8_vtbl) {
-        real_d3d8_vtbl = *(void ***)d3d;
-        memcpy(d3d8_vtbl_copy, real_d3d8_vtbl, sizeof(d3d8_vtbl_copy));
-        real_CreateDevice = (CreateDeviceFn)real_d3d8_vtbl[15];
-        d3d8_vtbl_copy[15] = fake_CreateDevice;
-        *(void ***)d3d = d3d8_vtbl_copy;
-        log_line("Direct3D8 object vtable wrapped\n");
+        void **d3d8_vtbl = *(void ***)d3d;
+
+        if (patch_vtable_slot(d3d8_vtbl, 15, fake_CreateDevice,
+                (void **)&real_CreateDevice)) {
+            real_d3d8_vtbl = d3d8_vtbl;
+            log_line("Direct3D8 CreateDevice vtable slot patched\n");
+        } else {
+            real_CreateDevice = NULL;
+            log_line("Direct3D8 CreateDevice vtable slot patch failed\n");
+        }
     }
     return d3d;
 }
