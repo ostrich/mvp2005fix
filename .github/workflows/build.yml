@@ -67,8 +67,6 @@ jobs:
             gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "mvp2005fix $GITHUB_REF_NAME"
           fi
           gh release upload "$GITHUB_REF_NAME" \
-            dist/mvp2005fix.exe \
-            dist/mvp2005fix.dll \
             "dist/mvp2005fix-${GITHUB_REF_NAME}-windows-x86.zip" \
             --clobber
 
@@ -107,7 +105,5 @@ jobs:
               --notes "Automated development build from the latest successful master commit. These files are replaced after every successful master build."
           fi
           gh release upload master-build \
-            dist/mvp2005fix.exe \
-            dist/mvp2005fix.dll \
             dist/mvp2005fix-master-windows-x86.zip \
             --clobber
