@@ -71,3 +71,43 @@ jobs:
             dist/mvp2005fix.dll \
             "dist/mvp2005fix-${GITHUB_REF_NAME}-windows-x86.zip" \
             --clobber
+
+  publish-master:
+    if: github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build
+        uses: actions/download-artifact@v8
+        with:
+          name: mvp2005fix-windows-x86
+          path: dist
+
+      - name: Name master archive
+        run: mv dist/mvp2005fix-windows-x86.zip dist/mvp2005fix-master-windows-x86.zip
+
+      - name: Publish latest master build
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view master-build; then
+            gh api --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/git/refs/tags/master-build" \
+              -f sha="$GITHUB_SHA" \
+              -F force=true
+          else
+            gh release create master-build \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "Latest master build" \
+              --notes "Automated development build from the latest successful master commit. These files are replaced after every successful master build."
+          fi
+          gh release upload master-build \
+            dist/mvp2005fix.exe \
+            dist/mvp2005fix.dll \
+            dist/mvp2005fix-master-windows-x86.zip \
+            --clobber
