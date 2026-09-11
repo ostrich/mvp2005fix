@@ -44,6 +44,7 @@ static HWND save_check;
 static HWND aspect_check;
 static HWND status_text;
 static HWND custom_width_edit;
+static HWND custom_size_separator;
 static HWND custom_height_edit;
 
 static BOOL CALLBACK set_child_font(HWND child, LPARAM font)
@@ -60,6 +61,19 @@ static void set_status(const char *text)
 static int custom_resolution_index(void)
 {
     return (int)(sizeof(resolutions) / sizeof(resolutions[0])) - 1;
+}
+
+static void update_custom_resolution_controls(void)
+{
+    int idx = (int)SendMessageA(res_combo, CB_GETCURSEL, 0, 0);
+    int custom = idx == custom_resolution_index();
+    int show = custom ? SW_SHOW : SW_HIDE;
+
+    EnableWindow(custom_width_edit, custom);
+    EnableWindow(custom_height_edit, custom);
+    ShowWindow(custom_width_edit, show);
+    ShowWindow(custom_size_separator, show);
+    ShowWindow(custom_height_edit, show);
 }
 
 static void set_default_resolution_from_display(void)
@@ -93,8 +107,7 @@ static void set_default_resolution_from_display(void)
         SetWindowTextA(custom_width_edit, "");
         SetWindowTextA(custom_height_edit, "");
     }
-    EnableWindow(custom_width_edit, selected_idx == custom_idx);
-    EnableWindow(custom_height_edit, selected_idx == custom_idx);
+    update_custom_resolution_controls();
 }
 
 static void get_app_dir(char *app_dir, DWORD app_dir_size);
@@ -202,12 +215,15 @@ static void write_config(DWORD width, DWORD height, int aspect_enabled, int save
 static void do_browse(HWND hwnd)
 {
     OPENFILENAMEA ofn;
-    char path[MAX_PATH] = "";
+    char path[MAX_PATH] = "mvp2005.exe";
 
     ZeroMemory(&ofn, sizeof(ofn));
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = hwnd;
-    ofn.lpstrFilter = "MVP Baseball executable\\0mvp2005.exe\\0Executables\\0*.exe\\0All files\\0*.*\\0";
+    ofn.lpstrFilter = "MVP Baseball executable (mvp2005.exe)\0mvp2005.exe\0"
+        "Executables (*.exe)\0*.exe\0"
+        "All files (*.*)\0*.*\0";
+    ofn.nFilterIndex = 1;
     ofn.lpstrFile = path;
     ofn.nMaxFile = sizeof(path);
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
@@ -418,7 +434,8 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
         }
         custom_width_edit = CreateWindowA("EDIT", "", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
             296, 40, 60, 21, hwnd, (HMENU)ID_CUSTOM_WIDTH, NULL, NULL);
-        CreateWindowA("STATIC", "x", WS_CHILD | WS_VISIBLE, 362, 44, 12, 20, hwnd, NULL, NULL, NULL);
+        custom_size_separator = CreateWindowA("STATIC", "x", WS_CHILD | WS_VISIBLE,
+            362, 44, 12, 20, hwnd, NULL, NULL, NULL);
         custom_height_edit = CreateWindowA("EDIT", "", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
             376, 40, 60, 21, hwnd, (HMENU)ID_CUSTOM_HEIGHT, NULL, NULL);
         set_default_resolution_from_display();
@@ -459,10 +476,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
         switch (LOWORD(wparam)) {
         case ID_RES_COMBO:
             if (HIWORD(wparam) == CBN_SELCHANGE) {
-                int idx = (int)SendMessageA(res_combo, CB_GETCURSEL, 0, 0);
-                int custom = idx == custom_resolution_index();
-                EnableWindow(custom_width_edit, custom);
-                EnableWindow(custom_height_edit, custom);
+                update_custom_resolution_controls();
             }
             return 0;
         case ID_BROWSE:
