@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <stdlib.h>
+#include "MinHook.h"
 
 #if !defined(__i386__) && !defined(_M_IX86)
 #error "mvp2005fix requires 32-bit x86"
@@ -14,13 +15,12 @@ typedef HRESULT (WINAPI *SetVertexShaderFn)(void *self, DWORD handle);
 typedef HRESULT (WINAPI *SetStreamSourceFn)(void *self, UINT stream_number, void *stream_data,
     UINT stride);
 
-static BYTE saved_ex[5];
-static BYTE saved_a[5];
-static BYTE saved_d3d_create8[5];
 static void *target_ex;
 static void *target_a;
 static void *target_d3d_create8;
 static FARPROC real_Direct3DCreate8;
+static void *volatile d3d8_trampoline;
+static CRITICAL_SECTION vtable_lock;
 static void **real_d3d8_vtbl;
 static void **real_device_vtbl;
 static CreateDeviceFn real_CreateDevice;
@@ -168,39 +168,29 @@ static BOOL WINAPI fake_GetDiskFreeSpaceA(
     return TRUE;
 }
 
-static int hook_function(void *target, void *replacement, BYTE saved[5])
+/* Only the startup worker installs inline hooks. Publish the trampoline before
+ * enabling interception, including when the IAT hook is already reachable. */
+static int hook_function(void *target, void *replacement, void *volatile *original)
 {
-    DWORD old_protect;
-    BYTE patch[5];
-    DWORD existing_target;
+    MH_STATUS status;
+    void *trampoline = NULL;
     if (!target || !replacement) return 0;
-    if (*(BYTE *)target == 0xE9) {
-        existing_target = (DWORD)((BYTE *)target + 5 + *(LONG *)((BYTE *)target + 1));
-        return existing_target == (DWORD)replacement ? 1 : -1;
+    status = MH_EnsureHookEnabled(target);
+    if (status == MH_ERROR_NOT_CREATED) {
+        // Preserve the previous policy of leaving existing entry JMPs alone.
+        if (*(BYTE *)target == 0xE9) return -1;
+        status = MH_CreateHook(target, replacement, &trampoline);
+        if (status == MH_OK) {
+            if (original) InterlockedExchangePointer(original, trampoline);
+            status = MH_EnsureHookEnabled(target);
+        }
     }
-
-    memcpy(saved, target, 5);
-    patch[0] = 0xE9;
-    *(DWORD *)(patch + 1) = (DWORD)((BYTE *)replacement - ((BYTE *)target + 5));
-
-    if (VirtualProtect(target, 5, PAGE_EXECUTE_READWRITE, &old_protect)) {
-        memcpy(target, patch, 5);
-        FlushInstructionCache(GetCurrentProcess(), target, 5);
-        VirtualProtect(target, 5, old_protect, &old_protect);
-        return 2;
-    }
+    if (status == MH_OK) return 2;
+    if (status == MH_ERROR_ENABLED) return 1;
+    if (status == MH_ERROR_PATCH_CONFLICT) return -1;
+    log_line(MH_StatusToString(status));
+    log_line(" inline hook installation failed\n");
     return 0;
-}
-
-static void unhook_function(void *target, BYTE saved[5])
-{
-    DWORD old_protect;
-    if (!target) return;
-    if (VirtualProtect(target, 5, PAGE_EXECUTE_READWRITE, &old_protect)) {
-        memcpy(target, saved, 5);
-        FlushInstructionCache(GetCurrentProcess(), target, 5);
-        VirtualProtect(target, 5, old_protect, &old_protect);
-    }
 }
 
 static void install_save_fix(void)
@@ -211,9 +201,9 @@ static void install_save_fix(void)
     if (!kernel32) return;
     target_ex = (void *)GetProcAddress(kernel32, "GetDiskFreeSpaceExA");
     target_a = (void *)GetProcAddress(kernel32, "GetDiskFreeSpaceA");
-    log_line(hook_function(target_ex, fake_GetDiskFreeSpaceExA, saved_ex) > 0 ?
+    log_line(hook_function(target_ex, fake_GetDiskFreeSpaceExA, NULL) > 0 ?
         "GetDiskFreeSpaceExA hook installed\n" : "GetDiskFreeSpaceExA hook failed or conflicted\n");
-    log_line(hook_function(target_a, fake_GetDiskFreeSpaceA, saved_a) > 0 ?
+    log_line(hook_function(target_a, fake_GetDiskFreeSpaceA, NULL) > 0 ?
         "GetDiskFreeSpaceA hook installed\n" : "GetDiskFreeSpaceA hook failed or conflicted\n");
 }
 
@@ -345,6 +335,7 @@ static HRESULT WINAPI fake_CreateDevice(void *self, UINT adapter, DWORD device_t
     hr = real_CreateDevice(self, adapter, device_type, focus_window, behavior_flags,
         presentation_parameters, returned_device);
 
+    EnterCriticalSection(&vtable_lock);
     if (SUCCEEDED(hr) && returned_device && *returned_device && !real_device_vtbl) {
         void **vtbl = *(void ***)*returned_device;
         int shader_ok, constants_ok, stream_ok;
@@ -361,24 +352,24 @@ static HRESULT WINAPI fake_CreateDevice(void *self, UINT adapter, DWORD device_t
         }
     }
 
+    LeaveCriticalSection(&vtable_lock);
     return hr;
 }
 
 static void *WINAPI fake_Direct3DCreate8(UINT sdk_version)
 {
     Direct3DCreate8Fn fn = NULL;
+    void *call_target;
     void *d3d;
 
-    memcpy(&fn, &real_Direct3DCreate8, sizeof(fn));
+    call_target = InterlockedCompareExchangePointer(&d3d8_trampoline, NULL, NULL);
+    if (!call_target)
+        call_target = InterlockedCompareExchangePointer((void *volatile *)&real_Direct3DCreate8, NULL, NULL);
+    memcpy(&fn, &call_target, sizeof(fn));
     if (!fn) return NULL;
     log_line("Direct3DCreate8 intercepted\n");
-    if (target_d3d_create8) {
-        unhook_function(target_d3d_create8, saved_d3d_create8);
-    }
     d3d = fn(sdk_version);
-    if (target_d3d_create8) {
-        hook_function(target_d3d_create8, fake_Direct3DCreate8, saved_d3d_create8);
-    }
+    EnterCriticalSection(&vtable_lock);
     if (d3d && !real_d3d8_vtbl) {
         void **d3d8_vtbl = *(void ***)d3d;
 
@@ -392,6 +383,7 @@ static void *WINAPI fake_Direct3DCreate8(UINT sdk_version)
             log_line("Direct3D8 CreateDevice vtable slot patch failed\n");
         }
     }
+    LeaveCriticalSection(&vtable_lock);
     return d3d;
 }
 
@@ -406,11 +398,11 @@ static void patch_loaded_d3d8_export(void)
 
     proc = GetProcAddress(d3d8, "Direct3DCreate8");
     if (!proc) return;
-    if (!real_Direct3DCreate8) real_Direct3DCreate8 = proc;
+    InterlockedCompareExchangePointer((void *volatile *)&real_Direct3DCreate8, (void *)proc, NULL);
     if (!target_d3d_create8) target_d3d_create8 = (void *)proc;
     if (target_d3d_create8 != (void *)proc) return;
 
-    hook_result = hook_function((void *)proc, fake_Direct3DCreate8, saved_d3d_create8);
+    hook_result = hook_function((void *)proc, fake_Direct3DCreate8, &d3d8_trampoline);
     if (hook_result == 2) {
         if (InterlockedIncrement(&export_patch_log_count) <= 5) {
             log_line("Direct3DCreate8 export/code patched\n");
@@ -458,9 +450,10 @@ static int patch_iat_proc(const char *dll_name, const char *proc_name, void *rep
             if (lstrcmpA((const char *)import_name->Name, proc_name) != 0) continue;
 
             if ((void *)first_thunk->u1.Function == replacement) return 1;
-            if (original && !*original) *original = (FARPROC)first_thunk->u1.Function;
+            if (original) InterlockedCompareExchangePointer((void *volatile *)original,
+                (void *)first_thunk->u1.Function, NULL);
             if (VirtualProtect(&first_thunk->u1.Function, sizeof(void *), PAGE_READWRITE, &old_protect)) {
-                first_thunk->u1.Function = (ULONG_PTR)replacement;
+                InterlockedExchangePointer((void *volatile *)&first_thunk->u1.Function, replacement);
                 VirtualProtect(&first_thunk->u1.Function, sizeof(void *), old_protect, &old_protect);
                 if (InterlockedIncrement(&iat_patch_log_count) <= 10) {
                     log_line("IAT Direct3DCreate8 patched\n");
@@ -507,10 +500,14 @@ static DWORD WINAPI startup_hook_thread(LPVOID param)
 
 static DWORD WINAPI init_worker_thread(LPVOID param)
 {
+    MH_STATUS status;
     (void)param;
+    InitializeCriticalSection(&vtable_lock);
     load_config();
     log_line("mvp2005fix loaded\n");
     patch_resolution_in_memory();
+    status = MH_Initialize();
+    if (status != MH_OK) log_line("inline hook initialization failed; IAT interception remains available\n");
     install_save_fix();
     patch_d3d8_iat_once();
     startup_hook_thread(NULL);

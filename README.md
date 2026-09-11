@@ -114,3 +114,8 @@ make clean
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+The DLL statically includes [MinHook](https://github.com/TsudaKageyu/minhook)
+under its BSD license, including the Hacker Disassembler Engine notices.
+Releases include `MinHook-LICENSE.txt`; source notices are in
+`third_party/minhook/LICENSE.txt`.
