@@ -1,6 +1,10 @@
 #include <windows.h>
 #include <stdlib.h>
 
+#if !defined(__i386__) && !defined(_M_IX86)
+#error "mvp2005fix requires 32-bit x86"
+#endif
+
 typedef void *(WINAPI *Direct3DCreate8Fn)(UINT sdk_version);
 typedef HRESULT (WINAPI *CreateDeviceFn)(void *self, UINT adapter, DWORD device_type, HWND focus_window,
     DWORD behavior_flags, void *presentation_parameters, void **returned_device);
@@ -32,7 +36,7 @@ static int debug_logging;
 static LONG log_count;
 static LONG iat_patch_log_count;
 static LONG export_patch_log_count;
-static volatile LONG d3d_create8_seen;
+static volatile LONG d3d8_hook_ready;
 static volatile LONG d3d_device_seen;
 static HANDLE worker_thread;
 
@@ -207,19 +211,10 @@ static void install_save_fix(void)
     if (!kernel32) return;
     target_ex = (void *)GetProcAddress(kernel32, "GetDiskFreeSpaceExA");
     target_a = (void *)GetProcAddress(kernel32, "GetDiskFreeSpaceA");
-    hook_function(target_ex, fake_GetDiskFreeSpaceExA, saved_ex);
-    hook_function(target_a, fake_GetDiskFreeSpaceA, saved_a);
-    log_line("save fix hooks installed\n");
-}
-
-static int is_patchable_resolution_pair(const BYTE *p)
-{
-    DWORD w = p[0] | (p[1] << 8);
-    DWORD h = p[4] | (p[5] << 8);
-
-    if (p[2] != 0 || p[3] != 0) return 0;
-    if (w == 800 && h == 600) return 1;
-    return 0;
+    log_line(hook_function(target_ex, fake_GetDiskFreeSpaceExA, saved_ex) > 0 ?
+        "GetDiskFreeSpaceExA hook installed\n" : "GetDiskFreeSpaceExA hook failed or conflicted\n");
+    log_line(hook_function(target_a, fake_GetDiskFreeSpaceA, saved_a) > 0 ?
+        "GetDiskFreeSpaceA hook installed\n" : "GetDiskFreeSpaceA hook failed or conflicted\n");
 }
 
 static void patch_resolution_in_memory(void)
@@ -231,8 +226,13 @@ static void patch_resolution_in_memory(void)
     IMAGE_DOS_HEADER *dos;
     IMAGE_NT_HEADERS *nt;
     DWORD image_size;
-    BYTE replacement[6];
-    DWORD patched = 0;
+    static const DWORD signature[8] = {800, 600, 16, 0, 800, 600, 32, 0};
+    DWORD replacement[2];
+    IMAGE_SECTION_HEADER *section;
+    BYTE *match = NULL;
+    DWORD matches = 0;
+    DWORD old_protect;
+    WORD s;
     DWORD i;
 
     if (!get_ini_path(ini, sizeof(ini))) return;
@@ -247,26 +247,35 @@ static void patch_resolution_in_memory(void)
     if (nt->Signature != IMAGE_NT_SIGNATURE) return;
     image_size = nt->OptionalHeader.SizeOfImage;
 
-    replacement[0] = (BYTE)(width & 0xff);
-    replacement[1] = (BYTE)((width >> 8) & 0xff);
-    replacement[2] = 0;
-    replacement[3] = 0;
-    replacement[4] = (BYTE)(height & 0xff);
-    replacement[5] = (BYTE)((height >> 8) & 0xff);
-
-    for (i = 0; i + sizeof(replacement) <= image_size; i++) {
-        if (is_patchable_resolution_pair(base + i)) {
-            DWORD old_protect;
-            if (VirtualProtect(base + i, sizeof(replacement), PAGE_EXECUTE_READWRITE, &old_protect)) {
-                memcpy(base + i, replacement, sizeof(replacement));
-                FlushInstructionCache(GetCurrentProcess(), base + i, sizeof(replacement));
-                VirtualProtect(base + i, sizeof(replacement), old_protect, &old_protect);
-                patched++;
-                log_line("resolution pair patched in memory\n");
-                if (patched >= 2) break;
+    replacement[0] = width;
+    replacement[1] = height;
+    section = IMAGE_FIRST_SECTION(nt);
+    for (s = 0; s < nt->FileHeader.NumberOfSections; s++, section++) {
+        DWORD size = section->Misc.VirtualSize;
+        if (memcmp(section->Name, ".rdata\0\0", IMAGE_SIZEOF_SHORT_NAME) != 0) continue;
+        if (section->VirtualAddress >= image_size || size > image_size - section->VirtualAddress ||
+            size < sizeof(signature)) continue;
+        for (i = 0; i <= size - sizeof(signature); i++) {
+            BYTE *candidate = base + section->VirtualAddress + i;
+            if (memcmp(candidate, signature, sizeof(signature)) == 0) {
+                match = candidate;
+                matches++;
             }
         }
     }
+    if (matches != 1) {
+        log_line(matches ? "resolution table ambiguous; skipped\n" : "resolution table not found; skipped\n");
+        return;
+    }
+    if (!VirtualProtect(match, sizeof(signature), PAGE_READWRITE, &old_protect)) {
+        log_line("resolution table protection change failed\n");
+        return;
+    }
+    memcpy(match, replacement, sizeof(replacement));
+    memcpy(match + 16, replacement, sizeof(replacement));
+    if (!VirtualProtect(match, sizeof(signature), old_protect, &old_protect))
+        log_line("resolution table protection restore failed\n");
+    log_line("both resolution records patched in memory\n");
 }
 
 static HRESULT WINAPI fake_SetVertexShaderConstant(void *self, DWORD register_address,
@@ -337,15 +346,19 @@ static HRESULT WINAPI fake_CreateDevice(void *self, UINT adapter, DWORD device_t
         presentation_parameters, returned_device);
 
     if (SUCCEEDED(hr) && returned_device && *returned_device && !real_device_vtbl) {
+        void **vtbl = *(void ***)*returned_device;
+        int shader_ok, constants_ok, stream_ok;
         log_line("CreateDevice intercepted; patching device vtable\n");
-        InterlockedExchange(&d3d_device_seen, 1);
-        real_device_vtbl = *(void ***)*returned_device;
-        real_SetVertexShader = (SetVertexShaderFn)real_device_vtbl[76];
-        real_SetVertexShaderConstant = (SetVertexShaderConstantFn)real_device_vtbl[79];
-        real_SetStreamSource = (SetStreamSourceFn)real_device_vtbl[83];
-        patch_vtable_slot(real_device_vtbl, 76, fake_SetVertexShader, (void **)&real_SetVertexShader);
-        patch_vtable_slot(real_device_vtbl, 79, fake_SetVertexShaderConstant, (void **)&real_SetVertexShaderConstant);
-        patch_vtable_slot(real_device_vtbl, 83, fake_SetStreamSource, (void **)&real_SetStreamSource);
+        shader_ok = patch_vtable_slot(vtbl, 76, fake_SetVertexShader, (void **)&real_SetVertexShader);
+        constants_ok = patch_vtable_slot(vtbl, 79, fake_SetVertexShaderConstant, (void **)&real_SetVertexShaderConstant);
+        stream_ok = patch_vtable_slot(vtbl, 83, fake_SetStreamSource, (void **)&real_SetStreamSource);
+        if (shader_ok && constants_ok && stream_ok) {
+            real_device_vtbl = vtbl;
+            InterlockedExchange(&d3d_device_seen, 1);
+            log_line("device vtable hooks installed\n");
+        } else {
+            log_line("device vtable hooks incomplete; will retry on next CreateDevice\n");
+        }
     }
 
     return hr;
@@ -359,7 +372,6 @@ static void *WINAPI fake_Direct3DCreate8(UINT sdk_version)
     memcpy(&fn, &real_Direct3DCreate8, sizeof(fn));
     if (!fn) return NULL;
     log_line("Direct3DCreate8 intercepted\n");
-    InterlockedExchange(&d3d_create8_seen, 1);
     if (target_d3d_create8) {
         unhook_function(target_d3d_create8, saved_d3d_create8);
     }
@@ -373,6 +385,7 @@ static void *WINAPI fake_Direct3DCreate8(UINT sdk_version)
         if (patch_vtable_slot(d3d8_vtbl, 15, fake_CreateDevice,
                 (void **)&real_CreateDevice)) {
             real_d3d8_vtbl = d3d8_vtbl;
+            InterlockedExchange(&d3d8_hook_ready, 1);
             log_line("Direct3D8 CreateDevice vtable slot patched\n");
         } else {
             real_CreateDevice = NULL;
@@ -430,9 +443,12 @@ static int patch_iat_proc(const char *dll_name, const char *proc_name, void *rep
 
         if (lstrcmpiA(name, dll_name) != 0) continue;
 
+        if (!imports->OriginalFirstThunk || !imports->FirstThunk) {
+            log_line("IAT descriptor missing thunk table; skipping name scan\n");
+            continue;
+        }
         orig_thunk = (IMAGE_THUNK_DATA *)(base + imports->OriginalFirstThunk);
         first_thunk = (IMAGE_THUNK_DATA *)(base + imports->FirstThunk);
-        if (!orig_thunk) orig_thunk = first_thunk;
 
         for (; orig_thunk->u1.AddressOfData; orig_thunk++, first_thunk++) {
             IMAGE_IMPORT_BY_NAME *import_name;
@@ -473,12 +489,12 @@ static DWORD WINAPI startup_hook_thread(LPVOID param)
 
     /*
      * SafeDisc can run loader/unpacker code after our early injection. Patch
-     * during startup, then stop once D3D8 has been observed.
+     * during startup, then stop once the CreateDevice hook is installed.
      */
     for (i = 0; i < 400; i++) {
         if (InterlockedCompareExchange(&d3d_device_seen, 0, 0) ||
-            InterlockedCompareExchange(&d3d_create8_seen, 0, 0)) {
-            log_line("startup hook thread finished after D3D8 interception\n");
+            InterlockedCompareExchange(&d3d8_hook_ready, 0, 0)) {
+            log_line("startup hook thread finished after hook installation\n");
             return 0;
         }
         patch_d3d8_iat_once();

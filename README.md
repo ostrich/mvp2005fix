@@ -33,7 +33,7 @@ Choose a resolution, leave the 3D aspect fix enabled, and click Launch. If the g
 - can fake a smaller disk size so profile saves work on huge drives
 - stores settings in one local file, `mvp2005fix.ini`
 
-The fix is applied in memory after the launcher starts the game. Your game executable is not patched on disk. The resolution patch targets the game's original `800x600` resolution constants.
+The fix is applied in memory after the launcher starts the game. Your game executable is not patched on disk. The resolution patch requires a unique pair of original `800x600` records for 16-bit and 32-bit color in the executable's `.rdata` section. If that signature is missing or ambiguous, the resolution patch is skipped; debug logging reports the reason.
 
 ## Settings
 
