@@ -21,6 +21,10 @@ Put them in the same folder. The easiest option is the MVP Baseball 2005 install
 
 Run `mvp2005fix.exe`.
 
+Keep the launcher and DLL from the same release together. The launcher waits
+for the DLL's initial setup pass before allowing the game to run. A load or
+initialization failure stops the launch and displays an error.
+
 If the launcher finds `mvp2005.exe` in the same folder, it fills in the path automatically. If not, click Browse and select it.
 
 Choose a resolution, leave the 3D aspect fix enabled, and click Launch. If the game starts, the launcher closes.
@@ -34,6 +38,10 @@ Choose a resolution, leave the 3D aspect fix enabled, and click Launch. If the g
 - stores settings in one local file, `mvp2005fix.ini`
 
 The fix is applied in memory after the launcher starts the game. Your game executable is not patched on disk. The resolution patch requires a unique pair of original `800x600` records for 16-bit and 32-bit color in the executable's `.rdata` section. If that signature is missing or ambiguous, the resolution patch is skipped; debug logging reports the reason.
+
+Initial readiness means configuration and the first patch attempts are complete;
+it does not guarantee every optional patch matched. D3D8 interception continues
+retrying after the game resumes if D3D8 is not available during initial setup.
 
 ## Settings
 

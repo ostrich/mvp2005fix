@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <stdlib.h>
 #include "MinHook.h"
+#include "startup.h"
 
 #if !defined(__i386__) && !defined(_M_IX86)
 #error "mvp2005fix requires 32-bit x86"
@@ -502,14 +503,25 @@ static DWORD WINAPI init_worker_thread(LPVOID param)
 {
     MH_STATUS status;
     (void)param;
-    InitializeCriticalSection(&vtable_lock);
+    if (!InitializeCriticalSectionAndSpinCount(&vtable_lock, 0)) {
+        signal_startup_result(FALSE);
+        return 1;
+    }
     load_config();
     log_line("mvp2005fix loaded\n");
     patch_resolution_in_memory();
     status = MH_Initialize();
-    if (status != MH_OK) log_line("inline hook initialization failed; IAT interception remains available\n");
+    if (status != MH_OK) {
+        log_line("inline hook initialization failed\n");
+        signal_startup_result(FALSE);
+        return 1;
+    }
     install_save_fix();
     patch_d3d8_iat_once();
+    patch_loaded_d3d8_export();
+    // Ready means the initial pass is complete. D3D8 may only become available
+    // after the launcher resumes the game; never wait for it before signaling.
+    if (!signal_startup_result(TRUE)) log_line("no launcher readiness event available\n");
     startup_hook_thread(NULL);
     return 0;
 }
@@ -521,7 +533,8 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(inst);
         worker_thread = CreateThread(NULL, 0, init_worker_thread, NULL, 0, NULL);
-        if (worker_thread) CloseHandle(worker_thread);
+        if (!worker_thread) return FALSE;
+        CloseHandle(worker_thread);
     }
     return TRUE;
 }

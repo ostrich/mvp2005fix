@@ -277,6 +277,32 @@ static void test_system_exports(void)
     puts("PASS system disk exports and real D3D8 factory interception");
 }
 
+static void test_process_lifetime(void)
+{
+    BYTE before[5];
+    // Also reject removal of a never-enabled, but already published trampoline.
+    static const BYTE body[] = {0xb8,42,0,0,0,0xc2,4,0};
+    BYTE *disabled = executable(body, sizeof(body));
+    UnaryFn original;
+    assert(MH_CreateHook(disabled, fixed_detour, (void **)&original) == MH_OK);
+    memcpy(before, (void *)arithmetic, sizeof(before));
+    assert(MH_DisableHook((void *)arithmetic) == MH_ERROR_PROCESS_LIFETIME);
+    assert(MH_DisableHook(MH_ALL_HOOKS) == MH_ERROR_PROCESS_LIFETIME);
+    assert(MH_QueueDisableHook((void *)arithmetic) == MH_ERROR_PROCESS_LIFETIME);
+    assert(MH_QueueDisableHook(MH_ALL_HOOKS) == MH_ERROR_PROCESS_LIFETIME);
+    assert(MH_ApplyQueued() == MH_OK);
+    assert(MH_RemoveHook((void *)arithmetic) == MH_ERROR_PROCESS_LIFETIME);
+    assert(MH_RemoveHook(disabled) == MH_ERROR_PROCESS_LIFETIME);
+    assert(MH_Uninitialize() == MH_ERROR_PROCESS_LIFETIME);
+    assert(memcmp(before, (void *)arithmetic, sizeof(before)) == 0);
+    assert(arithmetic(41) == 1042 && arithmetic_original(41) == 42);
+    assert(original(0) == 42);
+    assert(MH_QueueEnableHook(disabled) == MH_OK);
+    assert(MH_ApplyQueued() == MH_OK);
+    assert(((UnaryFn)disabled)(0) == 999 && original(0) == 42);
+    puts("PASS lifetime restrictions preserve active hooks, queued state and published trampolines");
+}
+
 int main(int argc, char **argv)
 {
     assert(MH_Initialize() == MH_OK);
@@ -289,6 +315,7 @@ int main(int argc, char **argv)
     test_failures_and_suspended_ip();
     test_runtime_factory();
     test_relative_call_and_hotpatch();
+    test_process_lifetime();
     puts("All inline hook tests passed.");
     // Production hooks and trampolines deliberately live until process exit.
     return 0;

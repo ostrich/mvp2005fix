@@ -85,7 +85,10 @@ typedef enum MH_STATUS
     MH_ERROR_PATCH_CONFLICT,
 
     // Local extension: a live thread could not be suspended or inspected.
-    MH_ERROR_THREAD_CONTROL
+    MH_ERROR_THREAD_CONTROL,
+
+    // Local extension: teardown/disable is unsupported in this embedded fork.
+    MH_ERROR_PROCESS_LIFETIME
 }
 MH_STATUS;
 
@@ -101,8 +104,7 @@ extern "C" {
     // at the beginning of your program.
     MH_STATUS WINAPI MH_Initialize(VOID);
 
-    // Uninitialize the MinHook library. You must call this function EXACTLY
-    // ONCE at the end of your program.
+    // Unsupported: always returns MH_ERROR_PROCESS_LIFETIME.
     MH_STATUS WINAPI MH_Uninitialize(VOID);
 
     // Creates a hook for the specified target function, in disabled state.
@@ -147,7 +149,7 @@ extern "C" {
     MH_STATUS WINAPI MH_CreateHookApiEx(
         LPCWSTR pszModule, LPCSTR pszProcName, LPVOID pDetour, LPVOID *ppOriginal, LPVOID *ppTarget);
 
-    // Removes an already created hook.
+    // Unsupported: always returns MH_ERROR_PROCESS_LIFETIME, even if disabled.
     // Parameters:
     //   pTarget [in] A pointer to the target function.
     MH_STATUS WINAPI MH_RemoveHook(LPVOID pTarget);
@@ -164,7 +166,7 @@ extern "C" {
     // an active hook or frees/replaces its published trampoline.
     MH_STATUS WINAPI MH_EnsureHookEnabled(LPVOID pTarget);
 
-    // Disables an already created hook.
+    // Unsupported: always returns MH_ERROR_PROCESS_LIFETIME.
     // Parameters:
     //   pTarget [in] A pointer to the target function.
     //                If this parameter is MH_ALL_HOOKS, all created hooks are
@@ -178,7 +180,7 @@ extern "C" {
     //                queued to be enabled.
     MH_STATUS WINAPI MH_QueueEnableHook(LPVOID pTarget);
 
-    // Queues to disable an already created hook.
+    // Unsupported: always returns MH_ERROR_PROCESS_LIFETIME without queuing.
     // Parameters:
     //   pTarget [in] A pointer to the target function.
     //                If this parameter is MH_ALL_HOOKS, all created hooks are

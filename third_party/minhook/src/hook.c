@@ -141,26 +141,6 @@ static PHOOK_ENTRY AddHookEntry()
 }
 
 //-------------------------------------------------------------------------
-static VOID DeleteHookEntry(UINT pos)
-{
-    if (pos < g_hooks.size - 1)
-        g_hooks.pItems[pos] = g_hooks.pItems[g_hooks.size - 1];
-
-    g_hooks.size--;
-
-    if (g_hooks.capacity / 2 >= INITIAL_HOOK_CAPACITY && g_hooks.capacity / 2 >= g_hooks.size)
-    {
-        PHOOK_ENTRY p = (PHOOK_ENTRY)HeapReAlloc(
-            g_hHeap, 0, g_hooks.pItems, (g_hooks.capacity / 2) * sizeof(HOOK_ENTRY));
-        if (p == NULL)
-            return;
-
-        g_hooks.capacity /= 2;
-        g_hooks.pItems = p;
-    }
-}
-
-//-------------------------------------------------------------------------
 static DWORD_PTR FindOldIP(PHOOK_ENTRY pHook, DWORD_PTR ip)
 {
     UINT i;
@@ -562,40 +542,8 @@ MH_STATUS WINAPI MH_Initialize(VOID)
 //-------------------------------------------------------------------------
 MH_STATUS WINAPI MH_Uninitialize(VOID)
 {
-    MH_STATUS status = MH_OK;
-
-    EnterSpinLock();
-
-    if (g_hHeap != NULL)
-    {
-        status = EnableAllHooksLL(FALSE);
-        if (status == MH_OK)
-        {
-            // Free the internal function buffer.
-
-            // HeapFree is actually not required, but some tools detect a false
-            // memory leak without HeapFree.
-
-            UninitializeBuffer();
-
-            HeapFree(g_hHeap, 0, g_hooks.pItems);
-            HeapDestroy(g_hHeap);
-
-            g_hHeap = NULL;
-
-            g_hooks.pItems   = NULL;
-            g_hooks.capacity = 0;
-            g_hooks.size     = 0;
-        }
-    }
-    else
-    {
-        status = MH_ERROR_NOT_INITIALIZED;
-    }
-
-    LeaveSpinLock();
-
-    return status;
+    // This embedded fork publishes trampolines for process lifetime.
+    return MH_ERROR_PROCESS_LIFETIME;
 }
 
 //-------------------------------------------------------------------------
@@ -699,52 +647,16 @@ MH_STATUS WINAPI MH_CreateHook(LPVOID pTarget, LPVOID pDetour, LPVOID *ppOrigina
 //-------------------------------------------------------------------------
 MH_STATUS WINAPI MH_RemoveHook(LPVOID pTarget)
 {
-    MH_STATUS status = MH_OK;
-
-    EnterSpinLock();
-
-    if (g_hHeap != NULL)
-    {
-        UINT pos = FindHookEntry(pTarget);
-        if (pos != INVALID_HOOK_POS)
-        {
-            if (g_hooks.pItems[pos].isEnabled)
-            {
-                FROZEN_THREADS threads;
-                status = Freeze(&threads, pos, ACTION_DISABLE);
-                if (status == MH_OK)
-                {
-                    status = EnableHookLL(pos, FALSE);
-
-                    Unfreeze(&threads);
-                }
-            }
-
-            if (status == MH_OK)
-            {
-                FreeBuffer(g_hooks.pItems[pos].pTrampoline);
-                DeleteHookEntry(pos);
-            }
-        }
-        else
-        {
-            status = MH_ERROR_NOT_CREATED;
-        }
-    }
-    else
-    {
-        status = MH_ERROR_NOT_INITIALIZED;
-    }
-
-    LeaveSpinLock();
-
-    return status;
+    (void)pTarget;
+    return MH_ERROR_PROCESS_LIFETIME;
 }
 
 //-------------------------------------------------------------------------
 static MH_STATUS EnableHook(LPVOID pTarget, BOOL enable)
 {
     MH_STATUS status = MH_OK;
+
+    if (!enable) return MH_ERROR_PROCESS_LIFETIME;
 
     EnterSpinLock();
 
@@ -859,13 +771,16 @@ MH_STATUS WINAPI MH_EnsureHookEnabled(LPVOID pTarget)
 //-------------------------------------------------------------------------
 MH_STATUS WINAPI MH_DisableHook(LPVOID pTarget)
 {
-    return EnableHook(pTarget, FALSE);
+    (void)pTarget;
+    return MH_ERROR_PROCESS_LIFETIME;
 }
 
 //-------------------------------------------------------------------------
 static MH_STATUS QueueHook(LPVOID pTarget, BOOL queueEnable)
 {
     MH_STATUS status = MH_OK;
+
+    if (!queueEnable) return MH_ERROR_PROCESS_LIFETIME;
 
     EnterSpinLock();
 
@@ -909,7 +824,8 @@ MH_STATUS WINAPI MH_QueueEnableHook(LPVOID pTarget)
 //-------------------------------------------------------------------------
 MH_STATUS WINAPI MH_QueueDisableHook(LPVOID pTarget)
 {
-    return QueueHook(pTarget, FALSE);
+    (void)pTarget;
+    return MH_ERROR_PROCESS_LIFETIME;
 }
 
 //-------------------------------------------------------------------------
@@ -922,6 +838,15 @@ MH_STATUS WINAPI MH_ApplyQueued(VOID)
 
     if (g_hHeap != NULL)
     {
+        // Reject any disable transaction before relocating thread contexts.
+        for (i = 0; i < g_hooks.size; ++i)
+        {
+            if (g_hooks.pItems[i].isEnabled && !g_hooks.pItems[i].queueEnable)
+            {
+                LeaveSpinLock();
+                return MH_ERROR_PROCESS_LIFETIME;
+            }
+        }
         for (i = 0; i < g_hooks.size; ++i)
         {
             if (g_hooks.pItems[i].isEnabled != g_hooks.pItems[i].queueEnable)
@@ -1015,6 +940,7 @@ const char *WINAPI MH_StatusToString(MH_STATUS status)
         MH_ST2STR(MH_ERROR_FUNCTION_NOT_FOUND)
         MH_ST2STR(MH_ERROR_PATCH_CONFLICT)
         MH_ST2STR(MH_ERROR_THREAD_CONTROL)
+        MH_ST2STR(MH_ERROR_PROCESS_LIFETIME)
     }
 
 #undef MH_ST2STR

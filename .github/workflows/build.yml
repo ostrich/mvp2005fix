@@ -16,17 +16,34 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
 
     steps:
       - name: Check out source
         uses: actions/checkout@v7
 
-      - name: Install MinGW
-        run: sudo apt-get update && sudo apt-get install --yes mingw-w64
+      - name: Install build and test tools
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install --yes mingw-w64 wine wine32:i386 xvfb xauth
 
       - name: Build
-        run: make release
+        run: make release test-build
+
+      - name: Run regression tests
+        timeout-minutes: 5
+        env:
+          WINEPREFIX: ${{ runner.temp }}/mvp2005fix-test-prefix
+          WINEARCH: win32
+          WINEDEBUG: -all
+        run: |
+          xvfb-run -a sh -ec '
+            wineboot -u
+            wine release/inline-hooks-test.exe
+            wine release/startup-test.exe
+          '
 
       - name: Package build
         run: |

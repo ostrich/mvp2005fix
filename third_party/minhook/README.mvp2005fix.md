@@ -13,7 +13,11 @@ Local changes:
   are never replaced or freed by runtime code.
 - Thread suspension retains handles through resume. Failure to suspend or
   inspect a live enumerated thread aborts the patch and resumes acquired threads.
-- Single-hook disable uses the disable instruction-pointer relocation action.
+- `MH_DisableHook`, `MH_QueueDisableHook`, `MH_RemoveHook`, and
+  `MH_Uninitialize` always return `MH_ERROR_PROCESS_LIFETIME` without changing
+  state, including for disabled hooks and `MH_ALL_HOOKS`. Queue application
+  rejects disable transactions before changing any thread context. This fork
+  does not support teardown: published trampolines remain valid until exit.
 - Silence the unused x86 `pOrigin` parameter warning.
 
 The thread snapshot mechanism is inherited from MinHook: it coordinates with

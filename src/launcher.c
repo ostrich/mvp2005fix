@@ -3,6 +3,7 @@
 #include <commdlg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "injection.h"
 
 #define ID_EXE_EDIT 1001
 #define ID_BROWSE 1002
@@ -321,38 +322,6 @@ static void do_save(HWND hwnd)
     }
 }
 
-static int inject_dll(HANDLE process, const char *dll_path)
-{
-    SIZE_T len = lstrlenA(dll_path) + 1;
-    LPVOID remote_path;
-    HANDLE thread;
-    DWORD wait_result;
-    HMODULE kernel32;
-    FARPROC load_library_proc;
-    LPTHREAD_START_ROUTINE load_library;
-
-    remote_path = VirtualAllocEx(process, NULL, len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!remote_path) return 0;
-    if (!WriteProcessMemory(process, remote_path, dll_path, len, NULL)) {
-        VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
-        return 0;
-    }
-
-    kernel32 = GetModuleHandleA("kernel32.dll");
-    load_library_proc = GetProcAddress(kernel32, "LoadLibraryA");
-    memcpy(&load_library, &load_library_proc, sizeof(load_library));
-    thread = CreateRemoteThread(process, NULL, 0, load_library, remote_path, 0, NULL);
-    if (!thread) {
-        VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
-        return 0;
-    }
-
-    wait_result = WaitForSingleObject(thread, 10000);
-    CloseHandle(thread);
-    VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
-    return wait_result == WAIT_OBJECT_0;
-}
-
 static int launch_target(HWND hwnd, const char *exe_path, int write_ui_config)
 {
     char game_dir[MAX_PATH];
@@ -382,14 +351,21 @@ static int launch_target(HWND hwnd, const char *exe_path, int write_ui_config)
     ZeroMemory(&pi, sizeof(pi));
     si.cb = sizeof(si);
     if (CreateProcessA(exe_path, NULL, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, game_dir, &si, &pi)) {
-        if (!inject_dll(pi.hProcess, dll_path)) {
+        InjectionResult injection = inject_runtime(pi.hProcess, pi.dwProcessId, dll_path, 10000);
+        if (injection != INJECTION_OK) {
             TerminateProcess(pi.hProcess, 1);
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);
-            MessageBoxA(hwnd, "Could not inject mvp2005fix.dll. The game was not started.", "mvp2005fix", MB_ICONERROR);
+            MessageBoxA(hwnd, injection_error_message(injection), "mvp2005fix", MB_ICONERROR);
             return 0;
         }
-        ResumeThread(pi.hThread);
+        if (ResumeThread(pi.hThread) == (DWORD)-1) {
+            TerminateProcess(pi.hProcess, 1);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            MessageBoxA(hwnd, "Could not resume the game after runtime initialization.", "mvp2005fix", MB_ICONERROR);
+            return 0;
+        }
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
         if (hwnd) set_status("Launched mvp2005.exe with runtime fixes injected.");
