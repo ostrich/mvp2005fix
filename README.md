@@ -125,5 +125,5 @@ MIT. See [LICENSE](LICENSE).
 
 The DLL statically includes [MinHook](https://github.com/TsudaKageyu/minhook)
 under its BSD license, including the Hacker Disassembler Engine notices.
-Releases include `MinHook-LICENSE.txt`; source notices are in
-`third_party/minhook/LICENSE.txt`.
+Releases include all notices in the combined `LICENSE` file. The original
+third-party notices are also preserved in `third_party/minhook/LICENSE.txt`.

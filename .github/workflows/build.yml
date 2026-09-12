@@ -49,8 +49,7 @@ jobs:
         run: |
           mkdir -p dist
           cp release/mvp2005fix.exe release/mvp2005fix.dll README.md LICENSE dist/
-          cp third_party/minhook/LICENSE.txt dist/MinHook-LICENSE.txt
-          (cd dist && zip mvp2005fix-windows-x86.zip mvp2005fix.exe mvp2005fix.dll README.md LICENSE MinHook-LICENSE.txt)
+          (cd dist && zip mvp2005fix-windows-x86.zip mvp2005fix.exe mvp2005fix.dll README.md LICENSE)
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
